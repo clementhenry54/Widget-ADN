@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADN – Résultats du questionnaire</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+:root{--bg:#f5f7fb;--card:#fff;--txt:#1e2a3b;--mut:#6b7a90;--f:#e0559b;--g:#3b82f6;--acc:#5b5bd6;--bd:#e3e8f0}
+@media (prefers-color-scheme:dark){:root{--bg:#141a26;--card:#1d2535;--txt:#e8edf6;--mut:#93a1b8;--bd:#2c3750}}
+*{box-sizing:border-box}
+body{margin:0;padding:14px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--txt)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px 16px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:12px}
+.kpi b{display:block;font-size:26px;line-height:1.1;color:var(--acc)}
+.kpi span{font-size:12px;color:var(--mut)}
+.filters{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:12px}
+.filters label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
+select,input[type=range]{accent-color:var(--acc)}
+select{padding:5px 8px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--txt)}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+h3{margin:0 0 10px;font-size:14px}
+.tabs{display:inline-flex;border:1px solid var(--bd);border-radius:8px;overflow:hidden;float:right}
+.tabs button{border:0;background:none;color:var(--mut);padding:4px 10px;font-size:12px;cursor:pointer}
+.tabs button.on{background:var(--acc);color:#fff}
+.row{display:grid;grid-template-columns:minmax(90px,30%) 1fr 48px;gap:8px;align-items:center;margin:7px 0;cursor:pointer;font-size:13px}
+.row.sel .lbl{font-weight:700;color:var(--acc)}
+.row.dim{opacity:.4}
+.bar{height:20px;border-radius:6px;background:var(--bd);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;transition:width .5s}
+.bar .f{background:var(--f)}.bar .g{background:var(--g)}.bar .n{background:var(--acc)}
+.val{text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
+.donut{width:150px;height:150px;border-radius:50%;margin:6px auto 10px;position:relative;transition:background .5s}
+.donut::after{content:"";position:absolute;inset:24px;background:var(--card);border-radius:50%}
+.donut em{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-style:normal;font-weight:700;font-size:24px;z-index:1}
+.leg{display:flex;justify-content:center;gap:14px;font-size:12px;color:var(--mut)}
+.leg s{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;text-decoration:none}
+.empty{color:var(--mut);font-size:13px;padding:20px;text-align:center}
+.reset{font-size:12px;color:var(--acc);cursor:pointer;background:none;border:0;padding:0}
+</style>
+</head>
+<body>
+<div class="kpis">
+  <div class="card kpi"><b id="k1">–</b><span>Établissements</span></div>
+  <div class="card kpi"><b id="k2">–</b><span>Élèves ADN</span></div>
+  <div class="card kpi"><b id="k3" style="color:var(--f)">–</b><span>Filles</span></div>
+  <div class="card kpi"><b id="k4">–</b><span>% de filles</span></div>
+</div>
+
+<div class="card filters">
+  <label>Département<select id="fd"><option value="">Tous</option></select></label>
+  <label>Ville<select id="fv"><option value="">Toutes</option></select></label>
+  <label>Élèves ADN min. : <b id="mv">0</b><input type="range" id="fm" min="0" max="0" value="0"></label>
+  <button class="reset" id="rs">Réinitialiser</button>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="tabs"><button id="t1" class="on">Établissements</button><button id="t2">Élèves</button></div>
+    <h3>Thématiques de formation</h3>
+    <div id="themes"></div>
+  </div>
+  <div class="card">
+    <h3>Répartition filles / garçons</h3>
+    <div class="donut" id="donut"><em id="dp"></em></div>
+    <div class="leg"><span><s style="background:var(--f)"></s>Filles</span><span><s style="background:var(--g)"></s>Garçons</span></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let rows = [], mode = 'etab', themeSel = null;
+
+const toList = v => {
+  if (Array.isArray(v)) return (v[0] === 'L' ? v.slice(1) : v).map(x => String(x).trim()).filter(Boolean);
+  // texte : on ne coupe que sur ";" ou retour à la ligne (les libellés contiennent des virgules)
+  if (typeof v === 'string') return v.split(/;|\n/).map(x => x.trim()).filter(Boolean);
+  return [];
+};
+const clean = v => (typeof v === 'string' || typeof v === 'number') && !String(v).startsWith('#') ? String(v).trim() : '';
+const short = t => t.replace(/\s*\(.*$/, '').replace(/\.{3}$/, '').trim() || t;
+// Établissement type : "Collège X - Lunéville (054)" -> ville / département de secours
+const fromEtab = e => {
+  const m = String(e).match(/^(?:.*\s-\s)?(.+?)\s*\((\d{2,3}|2[AB])\)\s*$/);
+  return m ? { ville: m[1].trim(), dep: m[2] } : { ville: '', dep: '' };
+};
+const num = v => Number(v) || 0;
+
+function load(records) {
+  const m = grist.mapColumnNames(records);
+  if (!m) { $('themes').innerHTML = '<div class="empty">Associez les colonnes dans le panneau de création du widget.</div>'; return; }
+  rows = m.map(r => {
+    const etab = clean(r.etablissement), f = fromEtab(etab);
+    return { etab, ville: clean(r.ville) || f.ville, dep: clean(r.departement) || f.dep,
+      themes: toList(r.themes), eleves: num(r.eleves), filles: num(r.filles) };
+  });
+  fillSelect('fd', rows.map(r => r.dep));
+  fillSelect('fv', rows.map(r => r.ville));
+  const max = Math.max(0, ...rows.map(r => r.eleves));
+  $('fm').max = max; if (num($('fm').value) > max) $('fm').value = 0;
+  render();
+}
+
+function fillSelect(id, vals) {
+  const s = $(id), cur = s.value, first = s.options[0].outerHTML;
+  const u = [...new Set(vals.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'fr'));
+  s.innerHTML = first + u.map(v => `<option>${v}</option>`).join('');
+  if (u.includes(cur)) s.value = cur;
+}
+
+function filtered() {
+  const d = $('fd').value, v = $('fv').value, mn = num($('fm').value);
+  return rows.filter(r => (!d || r.dep === d) && (!v || r.ville === v) && r.eleves >= mn);
+}
+
+function render() {
+  $('mv').textContent = $('fm').value;
+  const all = filtered();
+  const data = themeSel ? all.filter(r => r.themes.includes(themeSel)) : all;
+
+  const tot = data.reduce((a, r) => a + r.eleves, 0);
+  const fil = data.reduce((a, r) => a + r.filles, 0);
+  const pct = tot ? Math.round(fil / tot * 100) : 0;
+  $('k1').textContent = data.length;
+  $('k2').textContent = tot.toLocaleString('fr-FR');
+  $('k3').textContent = fil.toLocaleString('fr-FR');
+  $('k4').textContent = tot ? pct + ' %' : '–';
+  $('donut').style.background = tot
+    ? `conic-gradient(var(--f) 0 ${pct}%, var(--g) ${pct}% 100%)` : 'var(--bd)';
+  $('dp').textContent = tot ? pct + ' %' : '';
+
+  // agrégat par thématique (sur le jeu filtré hors sélection de thème)
+  const agg = {};
+  all.forEach(r => r.themes.forEach(t => {
+    const a = agg[t] || (agg[t] = { n: 0, e: 0, f: 0 });
+    a.n++; a.e += r.eleves; a.f += r.filles;
+  }));
+  const list = Object.entries(agg).sort((a, b) => (mode === 'etab' ? b[1].n - a[1].n : b[1].e - a[1].e));
+  const max = Math.max(1, ...list.map(([, a]) => mode === 'etab' ? a.n : a.e));
+  $('themes').innerHTML = list.length ? list.map(([t, a]) => {
+    const v = mode === 'etab' ? a.n : a.e, w = v / max * 100;
+    const bar = mode === 'etab'
+      ? `<i class="n" style="width:${w}%"></i>`
+      : `<i class="f" style="width:${a.e ? w * a.f / a.e : 0}%"></i><i class="g" style="width:${a.e ? w * (a.e - a.f) / a.e : 0}%"></i>`;
+    const cls = themeSel ? (themeSel === t ? 'sel' : 'dim') : '';
+    return `<div class="row ${cls}" data-t="${encodeURIComponent(t)}" title="${t.replace(/"/g,'&quot;')} — ${a.n} établissement(s) · ${a.e} élèves · ${a.f} filles">
+      <span class="lbl" title="${t.replace(/"/g,'&quot;')}">${short(t)}</span><div class="bar">${bar}</div><span class="val">${v}</span></div>`;
+  }).join('') : '<div class="empty">Aucune donnée pour ces filtres.</div>';
+  document.querySelectorAll('.row').forEach(el => el.onclick = () => {
+    const t = decodeURIComponent(el.dataset.t);
+    themeSel = themeSel === t ? null : t; render();
+  });
+}
+
+['fd', 'fv'].forEach(id => $(id).onchange = render);
+$('fm').oninput = render;
+$('rs').onclick = () => { $('fd').value = ''; $('fv').value = ''; $('fm').value = 0; themeSel = null; render(); };
+$('t1').onclick = () => { mode = 'etab'; $('t1').className = 'on'; $('t2').className = ''; render(); };
+$('t2').onclick = () => { mode = 'eleves'; $('t2').className = 'on'; $('t1').className = ''; render(); };
+
+if (window.grist) {
+  grist.ready({
+    requiredAccess: 'read table',
+    columns: [
+      { name: 'themes', title: 'Thématiques de formation', type: 'ChoiceList' },
+      { name: 'eleves', title: "Nombre d'élèves ADN concernés", type: 'Numeric,Int' },
+      { name: 'filles', title: 'Filles', type: 'Numeric,Int' },
+      { name: 'etablissement', title: 'Établissement', type: 'Any', optional: true },
+      { name: 'ville', title: 'Ville', type: 'Any', optional: true },
+      { name: 'departement', title: 'Département', type: 'Any', optional: true }
+    ]
+  });
+  grist.onRecords(load);
+}
+</script>
+</body>
+</html>
